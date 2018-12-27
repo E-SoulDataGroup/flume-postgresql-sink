@@ -173,7 +173,8 @@ public class PostgreSQLSink extends AbstractSink implements Configurable {
                     if (item instanceof String) {
                         values.append("'").append(item.toString()).append("',");
                     } else {
-                        values.append(item.toString()).append(",");
+                        //values.append(item.toString()).append(",");
+                        values.append(item).append(",");
                     }
                 }
                 String sql = "";
@@ -185,13 +186,13 @@ public class PostgreSQLSink extends AbstractSink implements Configurable {
                     stmt.execute(sql);
                     conn.commit();
                 } catch (SQLException e) {
-                    try {
-                        conn.rollback();
-                    } catch (SQLException e1) {
-                        LOGGER.error("SQL error code: {}", e1.getErrorCode());
-                        LOGGER.error("SqlState: {}", e1.getSQLState());
-                        LOGGER.error("Error message: {}", e1.getMessage());
-                    }
+//                    try {
+//                        conn.rollback();
+//                    } catch (SQLException e1) {
+//                        LOGGER.error("SQL error code: {}", e1.getErrorCode());
+//                        LOGGER.error("SqlState: {}", e1.getSQLState());
+//                        LOGGER.error("Error message: {}", e1.getMessage());
+//                    }
                     LOGGER.error("Error SQL: {}", sql);
                     LOGGER.error("SQL error code: {}", e.getErrorCode());
                     LOGGER.error("SqlState: {}", e.getSQLState());
