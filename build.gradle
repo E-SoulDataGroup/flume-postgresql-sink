@@ -61,9 +61,6 @@ shadowJar {
     version = '1.0-SNAPSHOT'
     classifier = null
     configurations = [project.configurations.compile]
-    dependencies {
-        exclude dependency('org.apache.flume:flume-ng-core:1.5.2')
-    }
 }
 
 tasks.withType(JavaCompile) {
