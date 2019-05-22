@@ -1,11 +1,13 @@
 package com.dh.flume.postgresql.util;
 
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.math.BigDecimal;
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.sql.Date;
+import java.util.*;
 
 /**
  * DBUtil
@@ -15,6 +17,8 @@ import java.util.Map;
  **/
 
 public class DBUtil {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DBUtil.class);
 
     private static final int MAX_RETRY_TIMES = 3;
 
@@ -64,86 +68,59 @@ public class DBUtil {
         }
     }
 
-
-    public static List<Map<String, Object>> executeQuery(Connection connection, String sql) {
-        List<Map<String, Object>> result = com.google.common.collect.Lists.newArrayList();
-        ResultSet res = null;
-        Statement statement = null;
-        try {
-            statement = connection.createStatement();
-            res = statement.executeQuery(sql);
-            int columns = res.getMetaData().getColumnCount();
-            List<String> columnName = com.google.common.collect.Lists.newArrayList();
-            for (int i = 0; i < columns; i++) {
-                columnName.add(res.getMetaData().getColumnName(i + 1));
-            }
-
-            while (res.next()) {
-                Map<String, Object> row = com.google.common.collect.Maps.newHashMap();
-                for (int i = 0; i < columns; i++) {
-                    row.put(columnName.get(i), res.getObject(i + 1));
-                }
-                result.add(row);
-            }
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        } finally {
-            DBUtil.closeDBResources(res, statement, null);
-        }
-        return result;
-    }
-
     public static void closeDBResources(ResultSet rs, Statement stmt, Connection conn) {
         if (null != rs) {
             try {
                 rs.close();
-            } catch (SQLException unused) {
+            } catch (SQLException e) {
+                LOGGER.error(ExceptionUtils.getStackTrace(e));
             }
         }
 
         if (null != stmt) {
             try {
                 stmt.close();
-            } catch (SQLException unused) {
+            } catch (SQLException e) {
+                LOGGER.error(ExceptionUtils.getStackTrace(e));
             }
         }
 
         if (null != conn) {
             try {
                 conn.close();
-            } catch (SQLException unused) {
+            } catch (SQLException e) {
+                LOGGER.error(ExceptionUtils.getStackTrace(e));
             }
         }
     }
 
-    public static void executeBatch(Connection dbConn, List<String> sqls) {
-        if (sqls == null || sqls.size() == 0) {
-            return;
-        }
-
-        try {
-            Statement stmt = dbConn.createStatement();
-            for (String sql : sqls) {
-                stmt.addBatch(sql);
+    public static void closeDBResources(ResultSet rs, Collection<PreparedStatement> stmts, Connection conn) {
+        if (null != rs) {
+            try {
+                rs.close();
+            } catch (SQLException e) {
+                LOGGER.error(ExceptionUtils.getStackTrace(e));
             }
-            stmt.executeBatch();
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-    }
-
-    public static void executeOneByOne(Connection dbConn, List<String> sqls) {
-        if (sqls == null || sqls.size() == 0) {
-            return;
         }
 
-        try {
-            Statement stmt = dbConn.createStatement();
-            for (String sql : sqls) {
-                stmt.execute(sql);
+        if (!stmts.isEmpty()) {
+            try {
+                for (PreparedStatement stmt : stmts) {
+                    if (stmt != null) {
+                        stmt.close();
+                    }
+                }
+            } catch (SQLException e) {
+                LOGGER.error(ExceptionUtils.getStackTrace(e));
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
+        }
+
+        if (null != conn) {
+            try {
+                conn.close();
+            } catch (SQLException e) {
+                LOGGER.error(ExceptionUtils.getStackTrace(e));
+            }
         }
     }
 
@@ -160,6 +137,24 @@ public class DBUtil {
             keyMap.get(pkName).add(columnName);
         }
         return keyMap;
+    }
+
+    public static List<String> getColumns(String table, Connection dbConn) throws SQLException {
+        List<String> ret = new ArrayList<>();
+        ResultSet rs = dbConn.getMetaData().getColumns(null, null, table, null);
+        while (rs.next()) {
+            ret.add(rs.getString("COLUMN_NAME"));
+        }
+        return ret;
+    }
+
+    public static List<String> getColumnTypes(String table, Connection dbConn) throws SQLException {
+        List<String> ret = new ArrayList<>();
+        ResultSet rs = dbConn.getMetaData().getColumns(null, null, table, null);
+        while (rs.next()) {
+            ret.add(rs.getString("TYPE_NAME"));
+        }
+        return ret;
     }
 
 
@@ -196,45 +191,4 @@ public class DBUtil {
         }
     }
 
-
-    public static String formatJdbcUrl(String pluginName, String dbUrl) {
-        if (pluginName.equalsIgnoreCase("mysqlreader")
-                || pluginName.equalsIgnoreCase("mysqldreader")
-                || pluginName.equalsIgnoreCase("postgresqlreader")) {
-            String[] splits = dbUrl.split("\\?");
-
-            Map<String, String> paramMap = new HashMap<String, String>();
-            if (splits.length > 1) {
-                String[] pairs = splits[1].split("&");
-                for (String pair : pairs) {
-                    String[] leftRight = pair.split("=");
-                    paramMap.put(leftRight[0], leftRight[1]);
-                }
-            }
-
-            paramMap.put("useCursorFetch", "true");
-
-            if (pluginName.equalsIgnoreCase("mysqlreader")
-                    || pluginName.equalsIgnoreCase("mysqldreader")) {
-                paramMap.put("zeroDateTimeBehavior", "convertToNull");
-            }
-
-            StringBuffer sb = new StringBuffer(splits[0]);
-            if (paramMap.size() != 0) {
-                sb.append("?");
-                int index = 0;
-                for (Map.Entry<String, String> entry : paramMap.entrySet()) {
-                    if (index != 0) {
-                        sb.append("&");
-                    }
-                    sb.append(entry.getKey() + "=" + entry.getValue());
-                    index++;
-                }
-            }
-
-            dbUrl = sb.toString();
-        }
-
-        return dbUrl;
-    }
 }

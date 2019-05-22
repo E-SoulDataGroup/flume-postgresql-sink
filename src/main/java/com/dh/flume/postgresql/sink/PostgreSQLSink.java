@@ -5,9 +5,8 @@ import com.alibaba.fastjson.JSONObject;
 import com.dh.flume.postgresql.util.DBUtil;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
-import com.google.common.collect.Lists;
-import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.exception.ExceptionUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.flume.*;
 import org.apache.flume.conf.Configurable;
 import org.apache.flume.sink.AbstractSink;
@@ -15,15 +14,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.*;
 
 /**
  * PostgreSQLSink
  *
  * @author GeZhiHui
- * @create 2018-12-21
+ * @create 2019-05-22
  **/
 
 public class PostgreSQLSink extends AbstractSink implements Configurable {
@@ -37,10 +36,19 @@ public class PostgreSQLSink extends AbstractSink implements Configurable {
     private String password;
     private Integer batchSize;
 
-    private String tableNameKey;
+    private String topic;
 
-    private Statement stmt;
+    private Map<String, Map<String, String>> topicToTables = new HashMap<>();
+    private List<String> tableList = new ArrayList<>();
+    private Map<String, List<String>> tableColumns = new HashMap<>();
+    private Map<String, List<String>> tableColumnTypes = new HashMap<>();
+    private Map<String, Map<String, List<String>>> tableUniqueKeys = new HashMap<>();
+    private Map<String, String> tableWriteModes = new HashMap<>();
+    private Map<String, String> sqls = new HashMap<>();
+    private Map<String, PreparedStatement> stmts = new HashMap<>();
+
     private Connection conn;
+    private PostgresqlDatabaseMeta pgm;
 
     private static final String URL = "jdbc:postgresql://${hostname}:${port}/${database}";
 
@@ -53,7 +61,26 @@ public class PostgreSQLSink extends AbstractSink implements Configurable {
         try {
             conn = DBUtil.getConnection(url, user, password);
             conn.setAutoCommit(false);
-            stmt = conn.createStatement();
+            for (String tableName : tableList) {
+                List<String> columns = DBUtil.getColumns(tableName, conn);
+                List<String> columnTypes = DBUtil.getColumnTypes(tableName, conn);
+                tableColumns.put(tableName, columns);
+                tableColumnTypes.put(tableName, columnTypes);
+                Map<String, List<String>> primaryOrUniqueKeys = DBUtil.getPrimaryOrUniqueKeys(tableName, conn);
+                tableUniqueKeys.put(tableName, primaryOrUniqueKeys);
+                List<String> tableColumn = tableColumns.get(tableName);
+                String writeMode = tableWriteModes.get(tableName);
+                if (StringUtils.equalsIgnoreCase(writeMode, WriteMode.INSERT.name())) {
+                    String sql = pgm.getInsertStatement(tableColumn, tableName);
+                    sqls.put(tableName, sql);
+                    stmts.put(tableName, conn.prepareStatement(sql));
+                } else {
+                    String sql = pgm.getReplaceStatement(tableColumn, tableName, primaryOrUniqueKeys);
+                    sqls.put(tableName, sql);
+                    stmts.put(tableName, conn.prepareStatement(sql));
+                }
+            }
+
         } catch (SQLException e) {
             LOGGER.error("获取pg连接失败 --> {}", ExceptionUtils.getFullStackTrace(e));
         }
@@ -62,7 +89,7 @@ public class PostgreSQLSink extends AbstractSink implements Configurable {
     @Override
     public synchronized void stop() {
         super.stop();
-        DBUtil.closeDBResources(null, stmt, conn);
+        DBUtil.closeDBResources(null, stmts.values(), conn);
     }
 
     @Override
@@ -77,9 +104,24 @@ public class PostgreSQLSink extends AbstractSink implements Configurable {
         Preconditions.checkNotNull(user, "user must be set!!");
         password = context.getString("password");
         Preconditions.checkNotNull(password, "password must be set!!");
-        tableNameKey = context.getString("tableNameKey", "topic");
+        topic = context.getString("topic", "topic");
         batchSize = context.getInteger("batchSize", 100);
-
+        String topicToTable = context.getString("topicToTable");
+        JSONArray jsonArray = JSONObject.parseArray(topicToTable);
+        for (int i = 0; i < jsonArray.size(); i++) {
+            JSONObject jsonObject = jsonArray.getJSONObject(i);
+            Map<String, String> map = new HashMap<>();
+            String tableName = jsonObject.getString("tableName");
+            String writeMode = jsonObject.getString("writeMode");
+            String topicName = jsonObject.getString("topicName");
+            map.put("topicName", topicName);
+            map.put("tableName", tableName);
+            map.put("writeMode", writeMode);
+            topicToTables.put(topicName, map);
+            tableList.add(tableName);
+            tableWriteModes.put(tableName, writeMode);
+        }
+        pgm = new PostgresqlDatabaseMeta();
     }
 
     @Override
@@ -89,40 +131,38 @@ public class PostgreSQLSink extends AbstractSink implements Configurable {
         Transaction transaction = null;
         Event event;
         String body;
-        Map<String, String> header;
         try {
             transaction = channel.getTransaction();
             transaction.begin();
             clearBatch();
             for (int i = 0; i < batchSize; i++) {
-                List<List> actions = Lists.newArrayList();
-                List<String> columns = new ArrayList<>();
                 event = channel.take();
                 if (event != null) {
-                    header = event.getHeaders();
-                    //LOGGER.info("[header]: {}", header.toString());
-                    //TODO 表名的获取,根据header判断输出到哪张mysql表中
-                    String tableName = header.get(tableNameKey);
-                    if (tableName.contains("dh_ods_ods_dh_")) {
-                        String[] ss = tableName.split("dh_ods_ods_dh_");
-                        //tableName = "tab_" + ss[1];
-                        if(ss[1].contains("advert_click")){
-                            tableName = "ad_click";
-                        }else if(ss[1].contains("appstart")){
-                            tableName = "sdk_app_start";
-                        }else{
-                            tableName = ss[1];
-                        }
-
-                    }
+                    Map<String, String> headers = event.getHeaders();
+                    String topicName = headers.get(topic);
+                    String tableName = topicToTables.get(topicName).get("tableName");
+                    List<String> columns = tableColumns.get(tableName);
+                    List<String> columnTypes = tableColumnTypes.get(tableName);
                     body = new String(event.getBody());
-                    parseData(body, actions, columns);
-                    execute(actions, columns, tableName);
+                    JSONObject jsonObject = JSONObject.parseObject(body);
+                    for (int j = 0; j < columns.size(); j++) {
+                        //TODO stream表额外增加的字段
+                        if (StringUtils.equalsIgnoreCase(columns.get(j), "arrival_timestamp")) {
+                            stmts.get(tableName).setObject(j + 1, jsonObject.get(columns.get(j)));
+                        } else {
+                            String columnType = columnTypes.get(j);
+                            Object convert = PostgresqlTypeConverter.convert(jsonObject.get(columns.get(j)), columnType);
+                            DBUtil.setParameterValue(convert, stmts.get(tableName), j);
+                        }
+                    }
+                    stmts.get(tableName).addBatch();
                 } else {
                     result = Status.BACKOFF;
                     break;
                 }
             }
+            executeBatch();
+            conn.commit();
             transaction.commit();
         } catch (Exception e) {
             try {
@@ -138,120 +178,35 @@ public class PostgreSQLSink extends AbstractSink implements Configurable {
             if (transaction != null) {
                 transaction.close();
             }
+            try {
+                if (conn != null) {
+                    conn.commit();
+                }
+            } catch (SQLException e) {
+                LOGGER.error("SQL error code: {}", e.getErrorCode());
+                LOGGER.error("SqlState: {}", e.getSQLState());
+                LOGGER.error("Error message: {}", e.getMessage());
+            }
         }
 
         return result;
     }
 
-    private void parseData(String body, List<List> actions, List<String> columns) {
-        Object object = JSONObject.parse(body);
-        List<Object> rows = new ArrayList<>();
-        if (object instanceof JSONObject) {
-            JSONObject bodyJSON = (JSONObject) object;
-            Set<String> keySet = bodyJSON.keySet();
-            columns.addAll(keySet);
-            fillData(actions, rows, bodyJSON);
+    private void executeBatch() throws SQLException {
+        for (PreparedStatement statement : stmts.values()) {
+            statement.executeBatch();
         }
-        if (object instanceof JSONArray) {
-            JSONArray bodyJSON = (JSONArray) object;
-            for (int j = 0; j < bodyJSON.size(); j++) {
-                JSONObject itemJSON = bodyJSON.getJSONObject(j);
-                if (j == 0) {
-                    Set<String> keySet = itemJSON.keySet();
-                    columns.addAll(keySet);
-                }
-                fillData(actions, rows, itemJSON);
-            }
-        }
-    }
-
-    private void execute(List<List> actions, List<String> columns, String tableName) {
-        if (!actions.isEmpty()) {
-            for (List row : actions) {
-                StringBuilder values = new StringBuilder();
-                for (Object item : row) {
-                    if (item instanceof String) {
-                        values.append("'").append(item.toString()).append("',");
-                    } else {
-                        //values.append(item.toString()).append(",");
-                        values.append(item).append(",");
-                    }
-                }
-                String sql = "";
-                try {
-                    List<String> columnsReal = new ArrayList<>();
-                    sql = prepareSQL(columns, tableName, values, columnsReal);
-                    //LOGGER.info("SQL: {}", sql);
-                    //stmt.addBatch(sql);
-                    stmt.execute(sql);
-                    conn.commit();
-                } catch (SQLException e) {
-//                    try {
-//                        conn.rollback();
-//                    } catch (SQLException e1) {
-//                        LOGGER.error("SQL error code: {}", e1.getErrorCode());
-//                        LOGGER.error("SqlState: {}", e1.getSQLState());
-//                        LOGGER.error("Error message: {}", e1.getMessage());
-//                    }
-                    LOGGER.error("Error SQL: {}", sql);
-                    LOGGER.error("SQL error code: {}", e.getErrorCode());
-                    LOGGER.error("SqlState: {}", e.getSQLState());
-                    LOGGER.error("Error message: {}", e.getMessage());
-                }finally {
-                    try {
-                        conn.commit();
-                    } catch (SQLException e) {
-                        LOGGER.error("SQL error code: {}", e.getErrorCode());
-                        LOGGER.error("SqlState: {}", e.getSQLState());
-                        LOGGER.error("Error message: {}", e.getMessage());
-                    }
-                }
-            }
-//            try {
-//                stmt.executeBatch();
-//                conn.commit();
-//            } catch (SQLException e) {
-//                LOGGER.error("SQL error code: {}", e.getErrorCode());
-//                LOGGER.error("SqlState: {}", e.getSQLState());
-//                LOGGER.error("Error message: {}", e.getMessage());
-//            }
-        }
-    }
-
-    private String prepareSQL(List<String> columns, String tableName, StringBuilder values, List<String> columnsReal) {
-        String sql;
-        // PostgreSQL好像不支持"`"
-        for (String col : columns) {
-            columnsReal.add("\"" + col + "\"");
-        }
-        //columnsReal.addAll(columns);
-        sql = String.format("INSERT INTO %s (%s) VALUES (%s)",
-                tableName,
-                StringUtils.join(columnsReal.toArray(), ","),
-                values.toString().substring(0, values.toString().length() - 1));
-        return sql;
     }
 
     private void clearBatch() {
         try {
-            stmt.clearBatch();
+            for (PreparedStatement statement : stmts.values()) {
+                statement.clearBatch();
+            }
         } catch (SQLException e) {
-            LOGGER.error("clear batch异常 {}", ExceptionUtils.getFullStackTrace(e));
+            LOGGER.error(ExceptionUtils.getFullStackTrace(e));
             System.exit(1);
         }
-    }
-
-    private void fillData(List<List> actions, List<Object> rows, JSONObject bodyJSON) {
-        Set<Map.Entry<String, Object>> entries = bodyJSON.entrySet();
-        for (Map.Entry<String, Object> entry : entries) {
-            String key = entry.getKey();
-            if (key.equalsIgnoreCase("path")) {
-                rows.add(bodyJSON.get(key).toString().replace("\\", "\\\\"));
-            } else {
-                rows.add(bodyJSON.get(key));
-            }
-        }
-        actions.add(rows);
     }
 
 
