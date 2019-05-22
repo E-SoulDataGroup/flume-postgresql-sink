@@ -22,12 +22,14 @@ public class DBUtil {
 
     private static final int MAX_RETRY_TIMES = 3;
 
+    private static final Object OBJECT = new Object();
+
     private DBUtil() {
     }
 
     private static Connection getConnectionInternal(String url, String username, String password) throws SQLException {
         Connection dbConn;
-        synchronized (ClassUtil.LOCK_STR) {
+        synchronized (OBJECT) {
             DriverManager.setLoginTimeout(10);
 
             if (username == null) {
