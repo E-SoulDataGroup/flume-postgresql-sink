@@ -2,7 +2,8 @@
 
 ## 1 使用场景
 
-* **目前只适用于Flume source是kafka，后面考虑支持其他的source，支持写入数据到多表**
+* **目前只适用于Flume source是kafka，后面考虑支持其他的source，支持订阅多个topic并将数据写入到topic对应的表中**
+* **目前只支持topic中message与table字段名相同的情况，后面考虑支持自定义字段映射**
 
 ## 2 快速起步
 
