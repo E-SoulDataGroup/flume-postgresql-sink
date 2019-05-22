@@ -1,1 +1,0 @@
-flume postgreSQL sink
