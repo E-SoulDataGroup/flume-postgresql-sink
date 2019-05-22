@@ -45,7 +45,7 @@ postgresql.sinks.k1.topicToTable = [{"tableName":"tableName","writeMode":"insert
 
 ### 2.2 参数说明
 
-* **只作sink的参数说明，source及channel参数说明请参考 http://flume.apache.org/releases/content/1.8.0/FlumeUserGuide.html**
+只作sink的参数说明，source及channel参数说明请参考 http://flume.apache.org/releases/content/1.8.0/FlumeUserGuide.html
 * **type**
 	* 描述：sink类型
 		* com.dh.flume.postgresql.sink.PostgreSQLSink
